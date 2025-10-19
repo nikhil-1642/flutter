@@ -1,0 +1,9 @@
+name: backend
+environment:
+  sdk: ">=2.18.0 <3.0.0"
+
+dependencies:
+  shelf: ^1.4.0
+  shelf_router: ^1.0.0
+  mysql1: ^0.19.2
+  crypto: ^3.0.2
