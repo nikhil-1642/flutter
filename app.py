@@ -29,7 +29,7 @@ def get_db_connection():
         return None
 @app.route('/products')
 def product_page():
-    conn = get_connection()  # Use consistent connection function
+    conn = get_db_connection()  # Use consistent connection function
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, name, price, image_url FROM products1")
     products = cursor.fetchall()
@@ -81,4 +81,5 @@ def login():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
+
 
