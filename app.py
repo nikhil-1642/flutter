@@ -9,10 +9,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__, static_folder='.', static_url_path='')
-CORS(app, resources={r"/*": {"origins": "*"}})
+app = Flask(__name__)
+CORS(app)
 
-# ✅ Helper: convert MySQL data for JSON serialization
 def convert_product(product):
     for key, value in product.items():
         if isinstance(value, (datetime, date)):
@@ -21,10 +20,9 @@ def convert_product(product):
             product[key] = float(value)
     return product
 
-# ✅ Database connection
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(
+        return mysql.connector.connect(
             host=os.getenv("DB_HOST"),
             user=os.getenv("DB_USER"),
             port=os.getenv("DB_PORT"),
@@ -32,14 +30,17 @@ def get_db_connection():
             database=os.getenv("DB_NAME"),
             auth_plugin='mysql_native_password'
         )
-        return conn
     except Error as e:
-        print("Error connecting to MySQL:", e)
+        print("DB connection error:", e)
         return None
 
-# ✅ Route: Get all products
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"Unhandled Exception: {e}")
+    return jsonify({'status': 'error', 'error': str(e)}), 500
+
 @app.route('/products')
-def product_page():
+def products():
     conn = get_db_connection()
     if conn is None:
         return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
@@ -51,9 +52,9 @@ def product_page():
     conn.close()
 
     products = [convert_product(p) for p in products]
+    print("Products fetched:", products)
     return jsonify(products)
 
-# ✅ Route: Register user
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -77,7 +78,6 @@ def register():
         cursor.close()
         conn.close()
 
-# ✅ Route: Login user
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
