@@ -72,7 +72,7 @@ def home():
 
 @app.route('/products')
 def products():
-    """Get all products - returns direct array for Flutter compatibility"""
+    """Get all products - returns wrapped JSON object for Flutter"""
     conn = get_db_connection()
     if conn is None:
         return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
@@ -81,20 +81,21 @@ def products():
     try:
         cursor.execute("SELECT id, name, price, image_url FROM products1")
         products = cursor.fetchall()
-        
-        # Convert database types to JSON serializable
+
+        # Convert DB types to JSON-serializable types
         products = [convert_product(p) for p in products]
         print("Products fetched:", products)
-        
-        # Return as direct array (compatible with Flutter List<dynamic> expectation)
-        return jsonify(products)
-        
+
+        # ✅ Fixed: wrap response inside a dictionary
+        return jsonify({'status': 'ok', 'products': products})
+
     except Exception as e:
         print(f"Error in /products: {e}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
+
 
 @app.route('/register', methods=['POST', 'OPTIONS'])
 def register():
@@ -182,4 +183,5 @@ def test_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
+
 
