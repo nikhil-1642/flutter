@@ -1,3 +1,6 @@
+import os
+import mysql.connector
+from mysql.connector import Error
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, date
@@ -45,14 +48,14 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
         cursor.execute("INSERT INTO persons (username, password) VALUES (%s, %s)", (username, password))
         conn.commit()
-        return jsonify({'status': 'ok'})
+        return "ok"
+
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)})
     finally:
@@ -81,5 +84,6 @@ def login():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
+
 
 
