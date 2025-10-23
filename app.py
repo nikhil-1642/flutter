@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from db import get_connection
 from datetime import datetime, date
 import decimal
-app = Flask(__name__)
+from dotenv import load_dotenv
+
+load_dotenv()
+app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app, resources={r"/*": {"origins": "*"}})
 def convert_product(product):
     for key, value in product.items():
@@ -12,7 +14,19 @@ def convert_product(product):
         elif isinstance(value, decimal.Decimal):  # ← this line fixes the price issue
             product[key] = float(value)
     return product
-
+def get_db_connection():
+    try:
+        return mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            port=os.getenv("DB_PORT"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME"),
+            auth_plugin='mysql_native_password'
+        )
+    except Error as e:
+        print("Error connecting to MySQL:", e)
+        return None
 @app.route('/products')
 def product_page():
     conn = get_connection()  # Use consistent connection function
@@ -66,4 +80,5 @@ def login():
         return jsonify({'status': 'error', 'error': 'Invalid credentials'})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=5050)
+
