@@ -46,14 +46,24 @@ def products():
         return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
 
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, name, price, image_url FROM products1")
-    products = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    products = [convert_product(p) for p in products]
-    print("Products fetched:", products)
-    return jsonify(products)
+    try:
+        cursor.execute("SELECT id, name, price, image_url FROM products1")
+        products = cursor.fetchall()
+        
+        products = [convert_product(p) for p in products]
+        print("Products fetched:", products)
+        
+        # ✅ FIX: Return a proper JSON object instead of raw array
+        return jsonify({
+            'status': 'ok',
+            'products': products
+        })
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/register', methods=['POST'])
 def register():
