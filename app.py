@@ -181,4 +181,5 @@ def test_db():
         return jsonify({'status': 'error', 'message': 'Database connection failed'})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)
+
