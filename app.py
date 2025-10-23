@@ -8,18 +8,23 @@ import decimal
 from dotenv import load_dotenv
 
 load_dotenv()
+
 app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ✅ Helper: convert MySQL data for JSON serialization
 def convert_product(product):
     for key, value in product.items():
         if isinstance(value, (datetime, date)):
             product[key] = value.isoformat()
-        elif isinstance(value, decimal.Decimal):  # ← this line fixes the price issue
+        elif isinstance(value, decimal.Decimal):
             product[key] = float(value)
     return product
+
+# ✅ Database connection
 def get_db_connection():
     try:
-        return mysql.connector.connect(
+        conn = mysql.connector.connect(
             host=os.getenv("DB_HOST"),
             user=os.getenv("DB_USER"),
             port=os.getenv("DB_PORT"),
@@ -27,53 +32,65 @@ def get_db_connection():
             database=os.getenv("DB_NAME"),
             auth_plugin='mysql_native_password'
         )
+        return conn
     except Error as e:
         print("Error connecting to MySQL:", e)
         return None
+
+# ✅ Route: Get all products
 @app.route('/products')
 def product_page():
-    conn = get_db_connection()  # Use consistent connection function
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
+
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, name, price, image_url FROM products1")
     products = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    # Convert any datetime fields to string for JSON serialization
     products = [convert_product(p) for p in products]
+    return jsonify(products)
 
-    return jsonify(products)  # <-- IMPORTANT: Return the data as JSON!
+# ✅ Route: Register user
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    conn = get_connection()
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
+
     cursor = conn.cursor()
 
     try:
         cursor.execute("INSERT INTO persons (username, password) VALUES (%s, %s)", (username, password))
         conn.commit()
-        return "ok"
-
+        return jsonify({'status': 'ok'})
     except Exception as e:
+        conn.rollback()
         return jsonify({'status': 'error', 'error': str(e)})
     finally:
         cursor.close()
         conn.close()
 
+# ✅ Route: Login user
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
 
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'status': 'error', 'error': 'Database connection failed'}), 500
 
+    cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM persons WHERE username = %s AND password = %s", (username, password))
     user = cursor.fetchone()
-
     cursor.close()
     conn.close()
 
@@ -84,6 +101,3 @@ def login():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
-
-
-
