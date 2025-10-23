@@ -79,7 +79,7 @@ def products():
 
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT id, name, price, image_url FROM products1")
+        cursor.execute("SELECT id, name, price, image_url FROM products")
         products = cursor.fetchall()
 
         # Convert DB types to JSON-serializable types
@@ -183,5 +183,6 @@ def test_db():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
+
 
 
