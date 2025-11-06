@@ -1,0 +1,35 @@
+name: your_app_name
+description: A Flutter app for login & shop demo
+publish_to: 'none' # since it's a personal app
+
+environment:
+  sdk: ">=2.17.0 <3.0.0"  # adjust based on your Flutter/Dart version
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 🌍 Map + Location packages
+  flutter_map: ^7.0.0
+  latlong2: ^0.9.0
+  geolocator: ^10.1.0
+
+  # 🌐 HTTP client for backend API
+  http: ^1.2.1
+
+
+  # (Optional) For JSON serialization helpers, but your code uses manual parsing
+  # json_serializable: ^6.1.4  # you don't need this now
+
+  # Caching network images (optional, your code uses Image.network directly)
+  # cached_network_image: ^3.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+
+  # Add your asset folders if you have any images or fonts:
+  # assets:
+  #   - assets/images/

@@ -1,0 +1,607 @@
+from flask import Flask, request, jsonify,Response
+from flask_cors import CORS
+from db import get_db_connection
+from datetime import datetime, date
+import decimal
+from decimal import Decimal, ROUND_HALF_UP
+from math import radians, sin, cos, sqrt, atan2
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+import requests
+
+@app.route('/proxy_image')
+def proxy_image():
+    url = request.args.get("url")
+    if not url:
+        return jsonify({"error": "Missing URL"}), 400
+
+    try:
+        # Add a real browser user-agent to avoid being blocked by websites
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0 Safari/537.36"
+        }
+
+        # Get the image from the remote site
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        # If the image URL is invalid or blocked
+        if resp.status_code != 200:
+            return jsonify({
+                "error": f"Failed to fetch image (status {resp.status_code})"
+            }), 400
+
+        # Detect and forward the content type properly
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+
+        # Return the binary image data
+        return Response(resp.content, mimetype=content_type)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+def convert_product(product):
+    return {
+        "id": product["id"],
+        "name": product["name"],
+        "image_url": product["image_url"],
+        "price": float(product["price"])  # Convert string to float
+    }
+
+# ==================================================
+# 1️⃣ Fetch Products
+@app.route('/products')
+def product_page():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # ✅ Include shop_id in your query
+        cursor.execute("SELECT id, shop_id, name, category, image_url, price, quantity_in_stock, date_added FROM products")
+        products = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        products = [
+            {
+                "id": p["id"],
+                "shop_id": p["shop_id"],  # ✅ include
+                "name": p["name"],
+                "category": p["category"],
+                "image_url": p["image_url"],
+                "price": float(p["price"]),
+                "quantity_in_stock": p["quantity_in_stock"],
+                "date_added": p["date_added"]
+            }
+            for p in products
+        ]
+
+        return jsonify({
+            'status': 'ok',
+            'products': products
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/search_shops', methods=['GET'])
+def search_shops():
+    query = request.args.get("name", "").strip()
+    if not query:
+        return jsonify([])  # empty list if query missing
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT shop_id, shop_name, shop_type, owner_name, contact_number, email,
+                   address, city, state, postal_code, country, opening_time,
+                   closing_time, status, image_url, created_at, updated_at
+            FROM shops
+            WHERE LOWER(shop_name) LIKE %s
+            ORDER BY shop_name ASC
+        """, (f"{query.lower()}%",))
+
+        rows = cursor.fetchall()
+        return jsonify(rows)
+
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# 2️⃣ Add to Cart
+# ==================================================
+@app.route('/add_to_cart', methods=['POST'])
+def add_to_cart():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    items = data.get("items", [])
+
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id missing"}), 400
+
+    if not items:
+        return jsonify({"success": False, "message": "No items received"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        for item in items:
+            pickle_name = item.get("pickle_name")
+            quantity = item.get("quantity")
+            cost = item.get("cost")
+            shop_id = item.get("shop_id")  # 👈 NEW FIELD
+
+            if not pickle_name or not quantity or not cost or shop_id is None:
+                continue  # skip invalid items
+
+            cursor.execute("""
+                INSERT INTO cart (user_id, pickle_name, quantity, cost, shop_id)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, pickle_name, quantity, cost, shop_id))
+
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        print("Error adding to cart:", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ==================================================
+# 3️⃣ Buy Now
+# ==================================================
+def calc_distance(lat1, lon1, lat2, lon2):
+    R = 6371.0  # km
+    dlat = radians(float(lat2) - float(lat1))
+    dlon = radians(float(lon2) - float(lon1))
+    a = sin(dlat / 2)**2 + cos(radians(float(lat1))) * cos(radians(float(lat2))) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return R * c
+@app.route('/buy_now', methods=['POST'])
+def buy_now():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    items = data.get("items", [])
+    requested_shop_id = int(data.get("shop_id", 0))  # Get shop_id from client
+
+    if not user_id:
+        return jsonify({'success': False, 'message': 'user_id missing'}), 400
+    if not items:
+        return jsonify({'success': False, 'message': 'No items received'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Fetch all active shops
+        cursor.execute("""
+            SELECT shop_id, latitude, longitude 
+            FROM shops 
+            WHERE status = 'active' AND latitude IS NOT NULL AND longitude IS NOT NULL
+        """)
+        shops = cursor.fetchall()
+        if not shops:
+            return jsonify({'success': False, 'message': 'No active shops found'}), 404
+
+        # Determine which shop to use
+        if requested_shop_id == 0:
+            # Choose nearest shop
+            nearest_shop = min(
+                shops,
+                key=lambda shop: calc_distance(latitude, longitude, shop[1], shop[2])
+            )
+            shop_id, shop_lat, shop_lon = nearest_shop
+        else:
+            # Try to find requested shop
+            shop_found = next((s for s in shops if s[0] == requested_shop_id), None)
+            if shop_found:
+                shop_id, shop_lat, shop_lon = shop_found
+            else:
+                # If requested shop_id not found, fallback to nearest
+                nearest_shop = min(
+                    shops,
+                    key=lambda shop: calc_distance(latitude, longitude, shop[1], shop[2])
+                )
+                shop_id, shop_lat, shop_lon = nearest_shop
+
+        # Calculate distance and delivery charge
+        distance_km = Decimal(str(calc_distance(latitude, longitude, shop_lat, shop_lon))).quantize(Decimal('0.00000001'))
+        DELIVERY_PER_KM = Decimal('10')
+        MIN_CHARGE = Decimal('20')
+        delivery_charge = max(MIN_CHARGE, (distance_km * DELIVERY_PER_KM).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+        order_details = []
+
+        # Insert each item into orders
+        for item in items:
+            name = item.get("pickle_name")
+            if not name:
+                return jsonify({'success': False, 'message': 'pickle_name missing for an item'}), 400
+
+            qty = int(item.get("quantity", 1))
+            unit_price = Decimal(str(item.get("cost", 0)))
+            cost = (unit_price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            final_cost = (cost + delivery_charge).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+            cursor.execute("""
+                INSERT INTO orders (
+                    user_id, pickles, quantity, cost, status, created_at,
+                    latitude, longitude, distance, delivery_charge, final_cost, shop_id
+                ) VALUES (
+                    %s, %s, %s, %s, 'Ordered', NOW(),
+                    %s, %s, %s, %s, %s, %s
+                )
+            """, (
+                user_id, name, qty, cost,
+                Decimal(str(latitude)).quantize(Decimal('0.00000001')),
+                Decimal(str(longitude)).quantize(Decimal('0.00000001')),
+                distance_km, delivery_charge, final_cost, shop_id
+            ))
+
+            order_details.append({
+                "pickle_name": name,
+                "quantity": qty,
+                "cost": float(cost),
+                "delivery_charge": float(delivery_charge),
+                "final_cost": float(final_cost),
+                "shop_id": shop_id
+            })
+
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Order placed successfully",
+            "shop_id": shop_id,
+            "distance_km": float(distance_km),
+            "delivery_charge": float(delivery_charge),
+            "orders": order_details
+        })
+
+    except Exception as e:
+        conn.rollback()
+        print("Error in /buy_now:", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/distance_finder', methods=['POST'])
+def distance_finder():
+    data = request.get_json()
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    items = data.get("items", [])
+    requested_shop_id = int(data.get("shop_id", 0))  # Get shop_id from client
+
+    if not latitude or not longitude:
+        return jsonify({'success': False, 'message': 'Missing coordinates'}), 400
+    if not items:
+        return jsonify({'success': False, 'message': 'No items received'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Fetch active shops
+        cursor.execute("""
+            SELECT shop_id, latitude, longitude 
+            FROM shops 
+            WHERE status = 'active' AND latitude IS NOT NULL AND longitude IS NOT NULL
+        """)
+        shops = cursor.fetchall()
+        if not shops:
+            return jsonify({'success': False, 'message': 'No active shops found'}), 404
+
+        # Determine which shop to use
+        if requested_shop_id == 0:
+            nearest_shop = min(
+                shops,
+                key=lambda shop: calc_distance(latitude, longitude, shop[1], shop[2])
+            )
+            shop_id, shop_lat, shop_lon = nearest_shop
+        else:
+            shop_found = next((s for s in shops if s[0] == requested_shop_id), None)
+            if shop_found:
+                shop_id, shop_lat, shop_lon = shop_found
+            else:
+                nearest_shop = min(
+                    shops,
+                    key=lambda shop: calc_distance(latitude, longitude, shop[1], shop[2])
+                )
+                shop_id, shop_lat, shop_lon = nearest_shop
+
+        # Calculate distance and delivery charge
+        distance_km = Decimal(str(calc_distance(latitude, longitude, shop_lat, shop_lon))).quantize(Decimal('0.00000001'))
+        DELIVERY_PER_KM = Decimal('10')
+        MIN_CHARGE = Decimal('20')
+        delivery_charge = max(MIN_CHARGE, (distance_km * DELIVERY_PER_KM).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+        # Calculate total item cost
+        total_cost = sum(Decimal(str(i.get("cost", 0))) * int(i.get("quantity", 1)) for i in items)
+        final_cost = (total_cost + delivery_charge).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        return jsonify({
+            "success": True,
+            "shop_id": shop_id,
+            "distance_km": float(distance_km),
+            "delivery_charge": float(delivery_charge),
+            "final_cost": float(final_cost)
+        })
+
+    except Exception as e:
+        print("Error in /distance_finder:", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ==================================================
+# 4️⃣ Remove from Cart
+# ==================================================
+@app.route('/remove_from_cart', methods=['POST'])
+def remove_from_cart():
+    """Remove an item from user's cart by ID or pickle_name"""
+    data = request.get_json()
+    user_id = data.get("user_id")
+    cart_item_id = data.get("cart_item_id")
+    pickle_name = data.get("pickle_name")
+
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id missing"}), 400
+
+    if not cart_item_id and not pickle_name:
+        return jsonify({"success": False, "message": "cart_item_id or pickle_name required"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        if cart_item_id:
+            cursor.execute("DELETE FROM cart WHERE id = %s AND user_id = %s", (cart_item_id, user_id))
+        else:
+            cursor.execute("DELETE FROM cart WHERE pickle_name = %s AND user_id = %s", (pickle_name, user_id))
+
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return jsonify({"success": False, "message": "Item not found"}), 404
+
+        conn.commit()
+        return jsonify({"success": True, "message": "Item removed from cart"})
+    except Exception as e:
+        print("Error removing from cart:", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ==================================================
+# 5️⃣ Fetch Cart
+# ==================================================
+@app.route('/your_cart', methods=['GET'])
+def your_cart():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"status": "error", "error": "user_id missing"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+    SELECT id, user_id, pickle_name, quantity, cost, added_at, shop_id
+    FROM cart
+    WHERE user_id = %s
+""", (user_id,))
+        rows = cursor.fetchall()
+        return jsonify({"status": "ok", "cart_items": rows})
+    except Exception as e:
+        print("Error fetching cart:", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+# ==================================================
+# 9️⃣ Cancel Order (Delete from Orders)
+# ==================================================
+@app.route('/remove_item', methods=['POST'])
+def remove_item():
+    """Completely delete an order from the orders table."""
+    data = request.get_json()
+    user_id = data.get("user_id")
+    order_id = data.get("order_id")
+
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id missing"}), 400
+    if not order_id:
+        return jsonify({"success": False, "message": "order_id missing"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("DELETE FROM orders WHERE id = %s AND user_id = %s", (order_id, user_id))
+
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return jsonify({"success": False, "message": "Order not found"}), 404
+
+        conn.commit()
+        return jsonify({"success": True, "message": "Order deleted successfully"})
+    except Exception as e:
+        print("Error deleting order:", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ==================================================
+# 6️⃣ Fetch Orders
+# ==================================================
+@app.route('/orders_info', methods=['GET'])
+def orders_info():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"status": "error", "error": "user_id missing"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT id, user_id, pickles, quantity, cost, status, created_at
+            FROM orders
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,))
+        rows = cursor.fetchall()
+        return jsonify({"status": "ok", "orders": rows})
+    except Exception as e:
+        print("Error fetching orders:", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/shops', methods=['GET'])
+def get_shops():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT shop_id, shop_name, image_url, address, status 
+            FROM shops
+        """)
+        shops = cursor.fetchall()
+        return jsonify(shops)
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+# /items/<shop_name> route
+@app.route('/items/<int:shop_id>', methods=['GET'])
+def get_items_for_shop(shop_id):
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        query = """
+            SELECT id, shop_id, name, category, image_url, price, quantity_in_stock, date_added
+            FROM products
+            WHERE shop_id = %s
+        """
+        cursor.execute(query, (shop_id,))
+        items = cursor.fetchall()
+
+        return jsonify(items)
+
+    except Exception as e:
+        print("Error fetching items:", e)
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+
+@app.route('/search_items', methods=['GET'])
+def search_items():
+    query = request.args.get("query", "").strip().lower()
+    if not query:
+        return jsonify({"status": "error", "error": "Missing search query"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT id, name, price, image_url
+            FROM products
+            WHERE LOWER(TRIM(name)) LIKE %s
+            ORDER BY name ASC
+        """, (f"%{query}%",))  # lowercase & trimmed
+        rows = cursor.fetchall()
+        return jsonify({"status": "ok", "products": rows, "count": len(rows)})
+    except Exception as e:
+        print("❌ Error while searching products:", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ==================================================
+# 7️⃣ Register
+# ==================================================
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("INSERT INTO persons (username, password) VALUES (%s, %s)", (username, password))
+        conn.commit()
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ==================================================
+# 8️⃣ Login
+# ==================================================
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("SELECT * FROM persons WHERE username = %s AND password = %s", (username, password))
+    user = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    if user:
+        return jsonify({'status': 'ok', 'user': {'id': user['id'], 'username': user['username']}})
+    else:
+        return jsonify({'status': 'error', 'error': 'Invalid credentials'})
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)

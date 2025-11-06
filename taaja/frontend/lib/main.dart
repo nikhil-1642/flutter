@@ -45,7 +45,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _loading = true);
 
     try {
-      final url = Uri.parse('http://10.60.50.107:8080/login'); // Use 10.0.2.2 for emulator, or your IP
+      final url = Uri.parse('http://10.100.201.101:8080/login'); // Use 10.0.2.2 for emulator, or your IP
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -147,7 +147,7 @@ class _RegisterPageState extends State<RegisterPage> {
     setState(() => _loading = true);
 
     try {
-      final url = Uri.parse('http://10.60.50.107:8080/register'); // Use your IP or 10.0.2.2 for emulator
+      final url = Uri.parse('http://10.100.201.101:8080/register'); // Use your IP or 10.0.2.2 for emulator
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
