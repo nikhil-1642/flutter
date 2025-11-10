@@ -1,13 +1,13 @@
 from flask import Flask, request, jsonify,Response
 from flask_cors import CORS
 from db import get_db_connection
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
 import decimal
 from decimal import Decimal, ROUND_HALF_UP
 from math import radians, sin, cos, sqrt, atan2
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-
+import bcrypt
 import requests
 
 @app.route('/proxy_image')
@@ -51,7 +51,135 @@ def convert_product(product):
         "image_url": product["image_url"],
         "price": float(product["price"])  # Convert string to float
     }
+@app.route('/update-owner-details/<int:shop_id>', methods=['PUT'])
+def update_owner_details(shop_id):
+    try:
+        data = request.get_json()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
 
+        # ✅ Allowed fields to update
+        fields = [
+            'shop_name', 'shop_type', 'owner_name', 'contact_number', 'email',
+            'address', 'city', 'state', 'postal_code', 'country',
+            'opening_time', 'closing_time', 'status', 'image_url',
+            'latitude', 'longitude'
+        ]
+
+        update_data = {k: v for k, v in data.items() if k in fields}
+
+        if not update_data:
+            return jsonify({"status": "error", "message": "No valid fields to update"}), 400
+
+        # Build query dynamically
+        set_clause = ', '.join([f"{key} = %s" for key in update_data.keys()])
+        values = list(update_data.values())
+        values.append(shop_id)
+
+        query = f"UPDATE shops SET {set_clause}, updated_at = NOW() WHERE shop_id = %s"
+        cursor.execute(query, values)
+        conn.commit()
+
+        return jsonify({"status": "ok", "message": "Shop details updated successfully"}), 200
+
+    except Exception as e:
+        print(f"❌ Error updating shop details: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ----------------- Add Product -----------------
+@app.route('/add_owner_product', methods=['POST'])
+def add_owner_product():
+    try:
+        data = request.get_json()
+        shop_id = data.get('shop_id')
+        name = data.get('name')
+        category = data.get('category')
+        price = data.get('price')
+        quantity_in_stock = data.get('quantity_in_stock')
+        image_url = data.get('image_url')
+
+        if not all([shop_id, name, category, price is not None, quantity_in_stock is not None]):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        query = """
+        INSERT INTO products (shop_id, name, category, price, quantity_in_stock, image_url, date_added)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (
+            shop_id,
+            name,
+            category,
+            price,
+            quantity_in_stock,
+            image_url,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Product added successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+@app.route('/delete_owner_product', methods=['POST'])
+def delete_owner_product():
+    try:
+        data = request.get_json()
+        product_id = data.get('product_id')
+
+        if product_id is None:
+            return jsonify({"error": "product_id is required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        query = "DELETE FROM products WHERE id = %s"
+        cursor.execute(query, (product_id,))
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Product deleted successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+# ------------------ UPDATE PRODUCT ------------------
+@app.route('/update_product_owner', methods=['POST'])
+def update_product_owner():
+    try:
+        data = request.get_json()
+        product_id = data.get("product_id")
+        name = data.get("name")
+        category = data.get("category")
+        price = data.get("price")
+        quantity_in_stock = data.get("quantity_in_stock")
+        image_url = data.get("image_url")
+
+        if not product_id:
+            return jsonify({"error": "product_id is required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE products
+            SET name=%s, category=%s, price=%s, quantity_in_stock=%s, image_url=%s
+            WHERE id=%s
+        """, (name, category, price, quantity_in_stock, image_url, product_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "Product updated successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # ==================================================
 # 1️⃣ Fetch Products
 @app.route('/products')
@@ -89,36 +217,166 @@ def product_page():
             'status': 'error',
             'error': str(e)
         }), 500
-
-@app.route('/search_shops', methods=['GET'])
-def search_shops():
-    query = request.args.get("name", "").strip()
-    if not query:
-        return jsonify([])  # empty list if query missing
-
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-
+@app.route('/ownerproducts', methods=['POST'])
+def ownerproduct_page():
     try:
-        cursor.execute("""
-            SELECT shop_id, shop_name, shop_type, owner_name, contact_number, email,
-                   address, city, state, postal_code, country, opening_time,
-                   closing_time, status, image_url, created_at, updated_at
-            FROM shops
-            WHERE LOWER(shop_name) LIKE %s
-            ORDER BY shop_name ASC
-        """, (f"{query.lower()}%",))
+        data = request.get_json()
+        shop_id = data.get('shop_id')
 
-        rows = cursor.fetchall()
-        return jsonify(rows)
+        if shop_id is None:
+            return jsonify({"error": "shop_id is required"}), 400
 
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
 
-    finally:
+        query = """
+        SELECT id, shop_id, name, category, image_url, price, quantity_in_stock, date_added
+        FROM products
+        WHERE shop_id = %s
+        """
+        cursor.execute(query, (shop_id,))
+        products = cursor.fetchall()
+
         cursor.close()
         conn.close()
 
+        return jsonify(products), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+@app.route('/owner-details/<int:shop_id>', methods=['GET'])
+def get_owner_details(shop_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM shops WHERE shop_id = %s", (shop_id,))
+        shop = cursor.fetchone()
+
+        if not shop:
+            return jsonify({"status": "error", "message": "Shop not found"}), 404
+
+        # ✅ Remove sensitive fields
+        if 'password' in shop:
+            del shop['password']
+
+        # ✅ Convert MySQL objects (time, Decimal, datetime, etc.) to strings
+        for key, value in shop.items():
+            if isinstance(value, (datetime, date, time, timedelta)):
+                shop[key] = str(value)
+            elif isinstance(value, Decimal):
+                shop[key] = float(value)
+
+        return jsonify({"status": "ok", "shop": shop}), 200
+
+    except Exception as e:
+        print(f"❌ Error fetching shop details: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+# =========================================
+# 🧾 Full Shop Registration Route
+# =========================================
+@app.route('/shop_register', methods=['POST'])
+def shop_register():
+    data = request.json
+    try:
+        required_fields = ['shop_name', 'email', 'password']
+        if not all(field in data and data[field] for field in required_fields):
+            return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Check if email already exists
+        cursor.execute("SELECT * FROM shops WHERE email = %s", (data['email'],))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({'status': 'error', 'message': 'Email already registered'}), 400
+
+        # Hash password
+        hashed_pw = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+
+        # Insert shop record
+        cursor.execute("""
+            INSERT INTO shops (
+                shop_name, shop_type, owner_name, contact_number, email, address, city, state,
+                postal_code, country, opening_time, closing_time, status, image_url,
+                latitude, longitude, password, created_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, 'active', %s,
+                %s, %s, %s, NOW()
+            )
+        """, (
+            data.get('shop_name'),
+            data.get('shop_type'),
+            data.get('owner_name'),
+            data.get('contact_number'),
+            data.get('email'),
+            data.get('address'),
+            data.get('city'),
+            data.get('state'),
+            data.get('postal_code'),
+            data.get('country', 'India'),
+            data.get('opening_time'),
+            data.get('closing_time'),
+            data.get('image_url'),
+            data.get('latitude'),
+            data.get('longitude'),
+            hashed_pw
+        ))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({'status': 'ok', 'message': 'Shop registered successfully'})
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# =========================================
+# 🔑 Shop Login (same as before)
+# =========================================
+@app.route('/shop_login', methods=['POST'])
+def shop_login():
+    data = request.json
+    try:
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return jsonify({'status': 'error', 'message': 'Missing email or password'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT * FROM shops WHERE email = %s", (email,))
+        shop = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not shop:
+            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 400
+
+        if bcrypt.checkpw(password.encode('utf-8'), shop['password'].encode('utf-8')):
+            return jsonify({
+                'status': 'ok',
+                'message': 'Login successful',
+                'shop': {
+                    'shop_id': shop['shop_id'],
+                    'shop_name': shop['shop_name'],
+                    'email': shop['email'],
+                    'shop_type': shop['shop_type']
+                }
+            })
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid password'}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # 2️⃣ Add to Cart
 # ==================================================
@@ -484,6 +742,37 @@ def orders_info():
     finally:
         cursor.close()
         conn.close()
+@app.route('/shop_by_email', methods=['POST'])
+def get_shop_by_email():
+    try:
+        data = request.get_json()
+        email = data.get("email")
+
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT shop_id, shop_name, image_url, address, status 
+            FROM shops 
+            WHERE email = %s
+        """, (email,))
+
+        shop = cursor.fetchone()
+
+        if not shop:
+            return jsonify({"error": "Shop not found"}), 404
+
+        return jsonify({"status": "ok", "shop": shop})
+
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
 
 @app.route('/shops', methods=['GET'])
 def get_shops():
@@ -529,6 +818,49 @@ def get_items_for_shop(shop_id):
             cursor.close()
             connection.close()
 
+@app.route('/shop_orders', methods=['POST'])
+def get_shop_orders():
+    try:
+        data = request.get_json()
+        shop_id = data.get("shop_id")
+
+        if not shop_id:
+            return jsonify({"error": "shop_id is required"}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        # ✅ Join orders and users tables to get all details
+        query = """
+            SELECT 
+                o.id AS order_id,
+                o.pickles AS ordered_product,
+                o.quantity,
+                o.cost,
+                o.final_cost,
+                o.created_at AS order_date,
+                u.name AS user_name,
+                u.email AS user_email
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            WHERE o.shop_id = %s
+        """
+
+        cursor.execute(query, (shop_id,))
+        orders = cursor.fetchall()
+
+        if not orders:
+            return jsonify({"message": "No orders found for this shop_id"}), 404
+
+        return jsonify(orders), 200
+
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if 'connection' in locals() and connection.is_connected():
+            cursor.close()
+            connection.close()
 
 @app.route('/search_items', methods=['GET'])
 def search_items():
